@@ -395,6 +395,8 @@ def main(args):
 
 
 if __name__ == "__main__":
+    from custom_repr import enable_custom_repr
+    enable_custom_repr()
     args = get_args_parser()
     args = args.parse_args()
     if args.output_dir:

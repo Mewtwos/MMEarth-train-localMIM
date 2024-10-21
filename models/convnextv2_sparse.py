@@ -205,7 +205,9 @@ class SparseConvNeXtV2(nn.Module):
             x = self.initial_conv(x)
             x = self.stem(x)
 
+        latent = []
         x = self.stages[0](x)
+        latent.append(x.dense()[0])
 
         # sparse encoding
         for i in range(3):
@@ -213,8 +215,9 @@ class SparseConvNeXtV2(nn.Module):
             x = self.stages[i + 1](
                 x
             )  # the stages var in the code has 4 stages, so the first one is to be used immediately after the stem
+            latent.append(x.dense()[0])
 
         # densify
         x = x.dense()[0]
 
-        return x
+        return x, latent
