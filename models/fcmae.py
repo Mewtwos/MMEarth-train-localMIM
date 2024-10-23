@@ -116,18 +116,9 @@ class FCMAE(nn.Module):
 
         # mask tokens
         self.mask_token = nn.Parameter(torch.zeros(1, decoder_embed_dim, 1, 1))
-        self.latent_mask_token = nn.Parameter(torch.zeros(1, decoder_embed_dim, 1, 1))
-        self.latent_mask_token = [self.latent_mask_token for i in range(3)]
         decoder = [
             Block(dim=decoder_embed_dim, drop_path=0.0) for _ in range(decoder_depth)
         ]
-        latent_decoder = [nn.Sequential(*decoder) for _ in range(3)]
-        latent_pred = [nn.Conv2d(
-                    in_channels=decoder_embed_dim,
-                    out_channels=patch_size**2 * self.out_chans[modality],
-                    kernel_size=1,
-                ) for _ in range(3)]
-        
         # creating a decoder for each modality
         self.decoder_dict = nn.ModuleDict()
         self.pred_dict = nn.ModuleDict()
@@ -158,9 +149,24 @@ class FCMAE(nn.Module):
                     in_features=decoder_embed_dim, out_features=self.out_chans[modality]
                 )
 
-        self.apply(self._init_weights)
+        #修改的代码都放在这
+        # self.latent_decoder = [nn.Sequential(*decoder) for _ in range(3)]
+        # self.latent_pred = nn.ModuleList([nn.Conv2d(
+        #             in_channels=decoder_embed_dim,
+        #             out_channels=768,
+        #             kernel_size=1,
+        #         ) for _ in range(3)])
+        # self.latent_mask_token = nn.Parameter(torch.zeros(1, decoder_embed_dim, 1, 1))
+        # self.latent_mask_token_list = [self.latent_mask_token for i in range(3)]
+        # self.latent_proj = nn.ModuleList([nn.Conv2d(
+        #     in_channels=input_dim, out_channels=decoder_embed_dim, kernel_size=3, stride=2, padding=1
+        # ) for input_dim in dims[:-1]])
+        # self.latent_pool=nn.AdaptiveAvgPool2d((7, 7))
 
+
+        self.apply(self._init_weights)
         self.random_crop = RandomCrop((img_size, img_size))
+
 
     def _init_weights(self, m):
         if isinstance(m, MinkowskiConvolution):
@@ -182,8 +188,10 @@ class FCMAE(nn.Module):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.02)
             nn.init.constant_(m.bias, 0)
-        if hasattr(self, "mask_token"):
+        if hasattr(self, "mask_token"):   
             torch.nn.init.normal_(self.mask_token, std=0.02)
+        if hasattr(self, "latent_mask_token"):   
+            torch.nn.init.normal_(self.latent_mask_token, std=0.02)
 
     def patchify(self, imgs: Tensor, modality: str) -> Tensor:
         """
@@ -258,7 +266,7 @@ class FCMAE(nn.Module):
         pred = {}
         x = self.proj(x)
         n, c, h, w = x.shape
-        mask = mask.reshape(-1, h, w).unsqueeze(1).type_as(x)
+        mask = mask.reshape(-1, h, w).unsqueeze(1).type_as(x)       
         mask_token = self.mask_token.repeat(x.shape[0], 1, x.shape[2], x.shape[3])# 可学习参数，用于填补空缺
         x = x * (1.0 - mask) + mask_token * mask
         for modalities in self.args.out_modalities.keys():
@@ -422,18 +430,21 @@ class FCMAE(nn.Module):
 
     def latent_loss(self, img:Tensor, latent: list, mask: Tensor):
         latent.pop(-1)
-        latent = [self.proj(x) for x in latent]
+        latent = [self.latent_proj[i](x) for i, x in zip(range(len(self.latent_proj)), latent)]
+        latent = [self.latent_pool(x) for x in latent] # 每个stage都调整到7*7
         latent_out = []
-        for i in range(3):   # 生成预测
+        mask_temp = mask
+        for i in range(3):   # 解码
             x = latent[i]
             n, c, h, w = x.shape
             mask = mask.reshape(-1, h, w).unsqueeze(1).type_as(x)
-            mask_token = self.mask_token.repeat(x.shape[0], 1, x.shape[2], x.shape[3])
+            mask_token = self.latent_mask_token_list[i].repeat(x.shape[0], 1, x.shape[2], x.shape[3])
             x = x * (1.0 - mask) + mask_token * mask
-            x = self.latent_decoder[i]
-            latent_out.append(self.latent_pred[i])
+            x = self.latent_decoder[i](x)
+            latent_out.append(self.latent_pred[i](x))
 
         loss_list = []
+        mask = mask_temp
         for i in range(3):  # 计算损失
             pred = latent_out[i]
 
@@ -491,11 +502,12 @@ class FCMAE(nn.Module):
                 )
 
         x, mask, latent = self.forward_encoder(imgs, mask_ratio)
-        loss = self.latent_loss(imgs, latent, mask)
+        # latent_loss = self.latent_loss(imgs, latent, mask)
         pred = self.forward_decoder(x, mask)
         loss, loss_dict, log_vars, normalized_loss_list = self.forward_loss(
             imgs_dict, pred, mask
         )
+        # loss += latent_loss
         return loss, pred, mask, loss_dict, log_vars, normalized_loss_list
 
 
